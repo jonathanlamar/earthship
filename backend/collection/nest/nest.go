@@ -2,36 +2,45 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/aws/aws-lambda-go/lambda"
 	"io"
 	"log"
 	"net/http"
-    "os"
 	"strings"
 )
 
-func main() {
-	projectId := os.Getenv("PROJECT_ID") 
-	clientId := os.Getenv("CLIENT_ID")
-	clientSecret := os.Getenv("CLIENT_SECRET")
-	refreshToken := os.Getenv("REFRESH_TOKEN")
+type Request struct {
+	ProjectId    string `json:"projectId"`
+	ClientId     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
+	RefreshToken string `json:"refreshToken"`
+}
+
+func HandleRequest(ctx context.Context, event *Request) (*string, error) {
+	if event == nil {
+		return nil, fmt.Errorf("received nil event")
+	}
+
+	projectId := event.ProjectId
+	clientId := event.ClientId
+	clientSecret := event.ClientSecret
+	refreshToken := event.RefreshToken
 
 	newAccessToken := refreshAccessToken(clientId, clientSecret, refreshToken)
-	fmt.Printf("New access token: %s\n", newAccessToken)
+	log.Printf("New access token: %s\n", newAccessToken)
 
-	deviceIds := getThermostatDeviceIds(projectId, newAccessToken)
-	for _, deviceId := range deviceIds {
-		fmt.Printf("Device Name: %s\n", deviceId)
-	}
-	if len(deviceIds) != 1 {
-		log.Fatalf("Expected one device.  Found %v", deviceIds)
-	}
-
-	deviceId := deviceIds[0]
+	deviceId := getThermostatDeviceId(projectId, newAccessToken)
 	thermostatReading := getThermostatReading(projectId, deviceId, newAccessToken)
 
-	fmt.Printf("Thermostat Reading: %v\n", thermostatReading)
+	message := fmt.Sprintf("Thermostat Reading: %+v\n", thermostatReading)
+	return &message, nil
+}
+
+func main() {
+	lambda.Start(HandleRequest)
 }
 
 type GetAccessResponse struct {
@@ -94,7 +103,7 @@ func refreshAccessToken(clientId, clientSecret, refreshToken string) string {
 
 	var result RefreshAccessResponse
 	if err := json.Unmarshal(body, &result); err != nil { // Parse []byte to go struct pointer
-		fmt.Println("Can not unmarshal JSON")
+		log.Fatalf("Can not unmarshal JSON")
 	}
 
 	return result.AccessToken
@@ -108,23 +117,30 @@ type GetDevicesResponse struct {
 	} `json:"devices"`
 }
 
-func getThermostatDeviceIds(projectId, accessToken string) []string {
+func getThermostatDeviceId(projectId, accessToken string) string {
 	fullUrl := "https://smartdevicemanagement.googleapis.com/v1/enterprises/" + projectId + "/devices"
 	body := sendGetRequestWithAccessToken(fullUrl, accessToken)
 
 	var result GetDevicesResponse
 	if err := json.Unmarshal(body, &result); err != nil { // Parse []byte to go struct pointer
-		fmt.Println("Can not unmarshal JSON")
+		log.Fatalf("Can not unmarshal JSON")
 	}
 
-	var deviceNames []string
+	var deviceIds []string
 	for _, device := range result.Devices {
 		if device.Type == "sdm.devices.types.THERMOSTAT" {
-			deviceNames = append(deviceNames, getDeviceNameFromPath(device.Name))
+			deviceIds = append(deviceIds, getDeviceNameFromPath(device.Name))
 		}
 	}
 
-	return deviceNames
+	for _, deviceId := range deviceIds {
+		log.Printf("Device Name: %s\n", deviceId)
+	}
+	if len(deviceIds) != 1 {
+		log.Fatalf("Expected one device.  Found %v", deviceIds)
+	}
+
+	return deviceIds[0]
 }
 
 func sendGetRequestWithAccessToken(url, accessToken string) []byte {
@@ -201,7 +217,7 @@ func getThermostatReading(projectId, deviceId, accessToken string) ThermostatRea
 
 	var result GetDeviceResponse
 	if err := json.Unmarshal(body, &result); err != nil { // Parse []byte to go struct pointer
-		fmt.Println("Can not unmarshal JSON")
+		log.Fatalf("Can not unmarshal JSON")
 	}
 
 	return getThermostatReadingFromResponse(result)
