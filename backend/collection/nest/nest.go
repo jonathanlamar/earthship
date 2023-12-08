@@ -1,25 +1,20 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/aws/aws-lambda-go/lambda"
-	"io"
 	"log"
-	"net/http"
 	"strings"
 )
 
-type Request struct {
-	ProjectId    string `json:"projectId"`
-	ClientId     string `json:"clientId"`
-	ClientSecret string `json:"clientSecret"`
-	RefreshToken string `json:"refreshToken"`
+func main() {
+	lambda.Start(HandleRequest)
 }
 
-func HandleRequest(ctx context.Context, event *Request) (*string, error) {
+func HandleRequest(ctx context.Context, event *LambdaRequest) (*string, error) {
 	if event == nil {
 		return nil, fmt.Errorf("received nil event")
 	}
@@ -29,101 +24,57 @@ func HandleRequest(ctx context.Context, event *Request) (*string, error) {
 	clientSecret := event.ClientSecret
 	refreshToken := event.RefreshToken
 
-	newAccessToken := refreshAccessToken(clientId, clientSecret, refreshToken)
+	newAccessToken, err := refreshAccessToken(clientId, clientSecret, refreshToken)
+	if err != nil {
+		return nil, errors.New("Failed to refresh access token.")
+	}
 	log.Printf("New access token: %s\n", newAccessToken)
 
-	deviceId := getThermostatDeviceId(projectId, newAccessToken)
-	thermostatReading := getThermostatReading(projectId, deviceId, newAccessToken)
+	deviceId, err := getThermostatDeviceId(projectId, newAccessToken)
+	if err != nil {
+		return nil, errors.New("Failed to get device ID")
+	}
+	thermostatReading, err := getThermostatReading(projectId, deviceId, newAccessToken)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to get thermostat reading from device with ID %v", deviceId)
+	}
 
 	message := fmt.Sprintf("Thermostat Reading: %+v\n", thermostatReading)
 	return &message, nil
 }
 
-func main() {
-	lambda.Start(HandleRequest)
-}
-
-type GetAccessResponse struct {
-	AccessToken  string `json:"access_token"`
-	ExpiresIn    int    `json:"expires_in"`
-	RefreshToken string `json:"refresh_token"`
-	Scope        string `json:"scope"`
-	TokenType    string `json:"token_type"`
-}
-
-func getAccessToken(clientId, clientSecret, refreshToken string) (string, string) {
-	fullUrl := "https://www.googleapis.com/oauth2/v4/token" +
-		"?client_id=" + clientId +
-		"&client_secret=" + clientSecret +
-		"&grant_type=authorization_code&redirect_uri=https://www.google.com"
-
-	body := sendEmptyPost(fullUrl)
-
-	var result GetAccessResponse
-	if err := json.Unmarshal(body, &result); err != nil { // Parse []byte to go struct pointer
-		log.Fatal("Can not unmarshal JSON")
-	}
-
-	return result.AccessToken, result.RefreshToken
-}
-
-func sendEmptyPost(url string) []byte {
-	postBody, _ := json.Marshal(map[string]string{})
-	responseBody := bytes.NewBuffer(postBody)
-
-	resp, err := http.Post(url, "application/json", responseBody)
-	if err != nil {
-		log.Fatalf("An error occured %v", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Fatalf("An error occured %v", err)
-	}
-
-	return body
-}
-
-type RefreshAccessResponse struct {
-	AccessToken string `json:"access_token"`
-	ExpiresIn   int    `json:"expires_in"`
-	Scope       string `json:"scope"`
-	TokenType   string `json:"token_type"`
-}
-
-func refreshAccessToken(clientId, clientSecret, refreshToken string) string {
+func refreshAccessToken(clientId, clientSecret, refreshToken string) (string, error) {
 	fullUrl := "https://www.googleapis.com/oauth2/v4/token" +
 		"?client_id=" + clientId +
 		"&client_secret=" + clientSecret +
 		"&refresh_token=" + refreshToken +
 		"&grant_type=refresh_token"
 
-	body := sendEmptyPost(fullUrl)
-
-	var result RefreshAccessResponse
-	if err := json.Unmarshal(body, &result); err != nil { // Parse []byte to go struct pointer
-		log.Fatalf("Can not unmarshal JSON")
+	body, err := sendEmptyPost(fullUrl)
+	if err != nil {
+		return "", errors.New("Failed to send empty POST")
 	}
 
-	return result.AccessToken
+	// Parse []byte to go struct pointer
+	var result RefreshAccessResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", errors.New("Can not unmarshal JSON")
+	}
+
+	return result.AccessToken, nil
 }
 
-// Not complete
-type GetDevicesResponse struct {
-	Devices []struct {
-		Name string `json:"name"`
-		Type string `json:"type"`
-	} `json:"devices"`
-}
-
-func getThermostatDeviceId(projectId, accessToken string) string {
+func getThermostatDeviceId(projectId, accessToken string) (string, error) {
 	fullUrl := "https://smartdevicemanagement.googleapis.com/v1/enterprises/" + projectId + "/devices"
-	body := sendGetRequestWithAccessToken(fullUrl, accessToken)
+	body, err := sendGetRequestWithAccessToken(fullUrl, accessToken)
+	if err != nil {
+		return "", errors.New("Failed to set get request with access token.")
+	}
 
+	// Parse []byte to go struct pointer
 	var result GetDevicesResponse
-	if err := json.Unmarshal(body, &result); err != nil { // Parse []byte to go struct pointer
-		log.Fatalf("Can not unmarshal JSON")
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", errors.New("Can not unmarshal JSON")
 	}
 
 	var deviceIds []string
@@ -132,95 +83,33 @@ func getThermostatDeviceId(projectId, accessToken string) string {
 			deviceIds = append(deviceIds, getDeviceNameFromPath(device.Name))
 		}
 	}
-
-	for _, deviceId := range deviceIds {
-		log.Printf("Device Name: %s\n", deviceId)
-	}
 	if len(deviceIds) != 1 {
-		log.Fatalf("Expected one device.  Found %v", deviceIds)
+		return "", fmt.Errorf("Expected one device.  Found %v", deviceIds)
 	}
 
-	return deviceIds[0]
-}
-
-func sendGetRequestWithAccessToken(url, accessToken string) []byte {
-	// Empty body.  Header has to be set after the request is created.
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		log.Fatalf("An error occured %v", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	client := &http.Client{}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		log.Fatalf("An error occured %v", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Fatalf("An error occured %v", err)
-	}
-
-	return body
+	log.Printf("Device Id: %s\n", deviceIds[0])
+	return deviceIds[0], nil
 }
 
 func getDeviceNameFromPath(device string) string {
 	pathSplit := strings.Split(device, "/")
-
 	return pathSplit[len(pathSplit)-1]
 }
 
-type ThermostatReading struct {
-	Mode                string
-	Temp                float64
-	Humidity            int
-	HeatSetpointCelsius float64
-	CoolSetpointCelsius float64
-	ThermostatMode      string
-	FanTimerMode        string
-	HvacStatus          string
-}
-
-type GetDeviceResponse struct {
-	Name   string `json:"name"`
-	Tyep   string `json:"type"`
-	Traits struct {
-		Humidity struct {
-			AbientHumidityPercent int `json:"ambientHumidityPercent"`
-		} `json:"sdm.devices.traits.Humidity"`
-		Fan struct {
-			TimerMode string `json:"timerMode"`
-		} `json:"sdm.devices.traits.Fan"`
-		ThermostatMode struct {
-			Mode string `json:"mode"`
-		} `json:"sdm.devices.traits.ThermostatMode"`
-		HvacStatus struct {
-			Status string `json:"status"`
-		} `json:"sdm.devices.traits.ThermostatHvac"`
-		ThermostatTemperatureSetpoint struct {
-			HeatCelsius float64 `json:"heatCelsius"`
-			CoolCelsius float64 `json:"coolCelsius"`
-		} `json:"sdm.devices.traits.ThermostatTemperatureSetpoint"`
-		Temperature struct {
-			TemperatureCelsius float64 `json:"ambientTemperatureCelsius"`
-		} `json:"sdm.devices.traits.Temperature"`
-	} `json:"traits"`
-}
-
-func getThermostatReading(projectId, deviceId, accessToken string) ThermostatReading {
+func getThermostatReading(projectId, deviceId, accessToken string) (*ThermostatReading, error) {
 	fullUrl := "https://smartdevicemanagement.googleapis.com/v1/enterprises/" + projectId + "/devices/" + deviceId
-	body := sendGetRequestWithAccessToken(fullUrl, accessToken)
+	body, err := sendGetRequestWithAccessToken(fullUrl, accessToken)
+	if err != nil {
+		return nil, errors.New("Failed to send get request with access token.")
+	}
 
 	var result GetDeviceResponse
 	if err := json.Unmarshal(body, &result); err != nil { // Parse []byte to go struct pointer
-		log.Fatalf("Can not unmarshal JSON")
+		log.Printf("Can not unmarshal JSON")
 	}
 
-	return getThermostatReadingFromResponse(result)
+	thermostatReading := getThermostatReadingFromResponse(result)
+	return &thermostatReading, nil
 }
 
 func getThermostatReadingFromResponse(response GetDeviceResponse) ThermostatReading {
@@ -237,4 +126,25 @@ func getThermostatReadingFromResponse(response GetDeviceResponse) ThermostatRead
 	thermostatReading.HvacStatus = traits.HvacStatus.Status
 
 	return thermostatReading
+}
+
+// TODO: This is never called.  Remove it in a future commit.
+func getAccessToken(clientId, clientSecret, refreshToken string) (string, string, error) {
+	fullUrl := "https://www.googleapis.com/oauth2/v4/token" +
+		"?client_id=" + clientId +
+		"&client_secret=" + clientSecret +
+		"&grant_type=authorization_code&redirect_uri=https://www.google.com"
+
+	body, err := sendEmptyPost(fullUrl)
+	if err != nil {
+		return "", "", errors.New("Failed to send empty POST")
+	}
+
+	var result GetAccessResponse
+	// Parse []byte to golang struct pointer
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", "", errors.New("Can not unmarshal JSON")
+	}
+
+	return result.AccessToken, result.RefreshToken, nil
 }
