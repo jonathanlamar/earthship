@@ -6,7 +6,9 @@ from ingest.nest.types import *
 logger = logging.getLogger(__name__)
 
 
-def HandleRequest(event: LambdaRequest, context: dict) -> str:
+def HandleRequest(event: LambdaRequest, context: dict) -> dict[str, str]:
+    """Lambda Handler"""
+
     projectId = event.projectId
     clientId = event.clientId
     clientSecret = event.clientSecret
@@ -18,7 +20,7 @@ def HandleRequest(event: LambdaRequest, context: dict) -> str:
     deviceId = getThermostatDeviceId(projectId, newAccessToken)
     thermostatReading = getThermostatReading(projectId, deviceId, newAccessToken)
 
-    return f"Thermostat Reading: {thermostatReading}"
+    return thermostatReading.dict()
 
 
 def refreshAccessToken(clientId: str, clientSecret: str, refreshToken: str) -> str:
@@ -74,20 +76,3 @@ def getThermostatReading(projectId: str, deviceId: str, accessToken: str) -> The
         fanTimerMode=result.traits.fan.timerMode,
         hvacStatus=result.traits.hvacStatus.status,
     )
-
-
-# TODO: This is never called.  Remove it in a future commit.
-def getAccessToken(clientId: str, clientSecret: str) -> tuple[str, str]:
-    fullUrl = (
-        "https://www.googleapis.com/oauth2/v4/token"
-        + "?client_id="
-        + clientId
-        + "&client_secret="
-        + clientSecret
-        + "&grant_type=authorization_code&redirect_uri=https://www.google.com"
-    )
-
-    body = http.sendEmptyPost(fullUrl)
-    result = GetAccessResponse.model_validate(body)
-
-    return result.accessToken, result.refreshToken
