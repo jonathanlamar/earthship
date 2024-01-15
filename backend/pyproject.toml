@@ -11,4 +11,4 @@ target-version = ['py311']
 [tool.isort]
 profile = "black"
 line_length =120
-src_paths = ["src", "tests"]
+src_paths = ["ingest", "tests"]

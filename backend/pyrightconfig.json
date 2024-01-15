@@ -1,10 +1,8 @@
 {
-  "include": ["src"],
-  "exclude": ["stubs"],
-  "stubPath": "stubs/",
+  "include": ["inghest"],
   "reportMissingModuleSource": false,
   "pythonVersion": "3.11",
   "pythonPlatform": "Linux",
   "venvPath": "/opt/homebrew/Caskroom/miniforge/base/envs",
-  "venv": "earthship"
+  "venv": "earthship-backend"
 }

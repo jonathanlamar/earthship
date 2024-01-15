@@ -1,0 +1,7 @@
+name: earthship-backend
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pydantic>=2.5.3
+  - requests
